@@ -10,16 +10,26 @@ const port = process.env.PORT || 3000;
 // Set up EJS as the view engine
 app.set('view engine', 'ejs');
 
-// Serve static files
-app.use(express.static('public'));
+// Create required directories
+['uploads', 'downloads'].forEach(dir => {
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir);
+  }
+});
 
 // Configure multer for file uploads
-const upload = multer({ dest: 'uploads/' });
+const storage = multer.diskStorage({
+  destination: 'uploads/',
+  filename: (req, file, cb) => {
+    cb(null, Date.now() + '-' + file.originalname);
+  }
+});
 
-// Create uploads directory if it doesn't exist
-if (!fs.existsSync('uploads')) {
-  fs.mkdirSync('uploads');
-}
+const upload = multer({ storage: storage });
+
+// Serve static files
+app.use(express.static('public'));
+app.use('/downloads', express.static('downloads'));
 
 // Routes
 app.get('/', (req, res) => {
@@ -34,7 +44,7 @@ app.post('/upload', upload.fields([
   { name: 'hooplaSheet', maxCount: 1 }
 ]), async (req, res) => {
   try {
-    if (!req.files.mainSheet) {
+    if (!req.files || !req.files.mainSheet) {
       throw new Error('Main sheet is required');
     }
 
@@ -51,8 +61,18 @@ app.post('/upload', upload.fields([
     const result = await processExcelSheets(mainSheetPath, otherSheetPaths);
 
     // Clean up uploaded files
-    fs.unlinkSync(mainSheetPath);
-    otherSheetPaths.forEach(path => fs.unlinkSync(path));
+    setTimeout(() => {
+      try {
+        fs.unlinkSync(mainSheetPath);
+        otherSheetPaths.forEach(path => {
+          if (fs.existsSync(path)) {
+            fs.unlinkSync(path);
+          }
+        });
+      } catch (err) {
+        console.error('Cleanup error:', err);
+      }
+    }, 1000);
 
     res.json({
       success: true,
@@ -64,18 +84,37 @@ app.post('/upload', upload.fields([
       }
     });
   } catch (error) {
+    console.error('Upload error:', error);
     res.status(400).json({ success: false, error: error.message });
   }
 });
 
 app.get('/download/:filename', (req, res) => {
   const filePath = path.join(__dirname, 'downloads', req.params.filename);
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).send('File not found');
+  }
+  
   res.download(filePath, 'filtered_main_sheet.xlsx', err => {
     if (!err) {
       // Delete the file after download
-      fs.unlinkSync(filePath);
+      setTimeout(() => {
+        try {
+          if (fs.existsSync(filePath)) {
+            fs.unlinkSync(filePath);
+          }
+        } catch (err) {
+          console.error('Error deleting file:', err);
+        }
+      }, 1000);
     }
   });
+});
+
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error(err.stack);
+  res.status(500).json({ success: false, error: 'Something went wrong!' });
 });
 
 app.listen(port, () => {
